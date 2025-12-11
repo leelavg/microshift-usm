@@ -39,10 +39,33 @@ RUN useradd -m -s /bin/bash "${USER}" && \
 USER ${USER}:${USER}
 WORKDIR ${HOME}
 
-# Preparing the OS configuration for the build
-RUN git clone --branch "${USHIFT_GITREF}" --single-branch "${USHIFT_GIT_URL}" "${HOME}/microshift" && \
-    echo '{"auths":{"fake":{"auth":"aWQ6cGFzcwo="}}}' > /tmp/.pull-secret && \
+# Use local mounted directory if available, otherwise git clone
+# Split into two RUN commands to enable cache busting between them
+RUN if [ -d "/tmp/microshift-local" ]; then \
+        cp -a /tmp/microshift-local "${HOME}/microshift" && chown -R ${USER}:${USER} "${HOME}/microshift"; \
+    else \
+        git clone --branch "${USHIFT_GITREF}" --single-branch "${USHIFT_GIT_URL}" "${HOME}/microshift"; \
+    fi
+
+# Run configure-vm.sh separately so it can be cached (expensive dnf installs and Go setup)
+RUN echo '{"auths":{"fake":{"auth":"aWQ6cGFzcwo="}}}' > /tmp/.pull-secret && \
     "${HOME}/microshift/scripts/devenv-builder/configure-vm.sh" --no-build --no-set-release-version --skip-dnf-update /tmp/.pull-secret
+
+WORKDIR ${HOME}/microshift/
+
+# Cache busting for local development - change this arg to invalidate cache from this point
+# Placed after configure-vm.sh so dnf installs and Go setup are cached,
+# but BEFORE the source copy so local code changes invalidate the build steps
+ARG CACHE_BUST=0
+RUN echo "Cache bust marker: ${CACHE_BUST}"
+
+# Re-copy local source after cache bust to pick up any code changes
+# This ensures that when CACHE_BUST changes, we get fresh source code
+RUN if [ -d "/tmp/microshift-local" ]; then \
+        rm -rf "${HOME}/microshift" && \
+        cp -a /tmp/microshift-local "${HOME}/microshift" && \
+        chown -R ${USER}:${USER} "${HOME}/microshift"; \
+    fi
 
 WORKDIR ${HOME}/microshift/
 

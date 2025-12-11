@@ -39,10 +39,21 @@ fi
 dnf install -y firewalld jq bash-completion
 firewall-offline-cmd --zone=trusted --add-source=10.42.0.0/16
 firewall-offline-cmd --zone=trusted --add-source=169.254.169.1
-# Multinode clusters require connectivity on both apiserver and etcd
-firewall-offline-cmd --zone=public --add-port=6443/tcp
-firewall-offline-cmd --zone=public --add-port=2379/tcp
-firewall-offline-cmd --zone=public --add-port=2380/tcp
+# Kubernetes standard ports (reference: https://kubernetes.io/docs/reference/networking/ports-and-protocols/)
+# Control plane ports
+firewall-offline-cmd --zone=public --add-port=6443/tcp    # Kubernetes API server
+firewall-offline-cmd --zone=public --add-port=2379-2380/tcp  # etcd server client API
+firewall-offline-cmd --zone=public --add-port=10250/tcp   # Kubelet API
+firewall-offline-cmd --zone=public --add-port=10256/tcp   # kube-proxy health check
+firewall-offline-cmd --zone=public --add-port=10257/tcp   # kube-controller-manager
+firewall-offline-cmd --zone=public --add-port=10259/tcp   # kube-scheduler
+# OVN-Kubernetes CNI ports (multinode with OVN requires these database ports)
+firewall-offline-cmd --zone=public --add-port=6641/tcp    # OVN Northbound DB
+firewall-offline-cmd --zone=public --add-port=6642/tcp    # OVN Southbound DB
+firewall-offline-cmd --zone=public --add-port=9641/tcp    # OVN NB client
+firewall-offline-cmd --zone=public --add-port=9642/tcp    # OVN SB client
+firewall-offline-cmd --zone=public --add-port=9643/tcp    # OVN NB RAFT
+firewall-offline-cmd --zone=public --add-port=9644/tcp    # OVN SB RAFT
 
 # Configure limits for cAdvisor and kubelet
 cat > /etc/sysctl.d/99-microshift.conf <<EOF

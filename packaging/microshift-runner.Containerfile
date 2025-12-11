@@ -34,10 +34,9 @@ RUN ${REPO_CONFIG_SCRIPT} -create ${USHIFT_RPM_REPO_PATH} && \
     if [ "${WITH_OLM}" = "1" ] ; then \
         dnf install -y microshift-olm microshift-olm-release-info ; \
     fi && \
+    dnf clean all && \
     ${REPO_CONFIG_SCRIPT} -delete && \
-    rm -vf  ${REPO_CONFIG_SCRIPT} && \
-    rm -rvf ${USHIFT_RPM_REPO_PATH} && \
-    dnf clean all
+    rm -rvf ${USHIFT_RPM_REPO_PATH} ${REPO_CONFIG_SCRIPT}
 
 # Post-install MicroShift configuration
 COPY --chmod=755 ./src/rpm/postinstall.sh ${USHIFT_POSTINSTALL_SCRIPT}

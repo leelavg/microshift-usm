@@ -253,7 +253,7 @@ create_images() {
   cli_image
   service_ca_operator_image
   operator_lifecycle_manager_image
-  # ovn_kubernetes_microshift_image
+  ovn_kubernetes_microshift_image
 }
 
 # Push the images and manifests to the registry
@@ -314,10 +314,9 @@ create_new_okd_release() {
       "service-ca-operator=${images_sha[service-ca-operator]}" \
       "operator-lifecycle-manager=${images_sha[operator-lifecycle-manager]}" \
       "operator-registry=${images_sha[operator-registry]}" \
+      "ovn-kubernetes-base=${images_sha[ovn-kubernetes-base]}" \
+      "ovn-kubernetes-microshift=${images_sha[ovn-kubernetes-microshift]}" \
       --to-image "${OKD_RELEASE_IMAGE}"
-
-      # "ovn-kubernetes-base=${images_sha[ovn-kubernetes-base]}" \
-      # "ovn-kubernetes-microshift=${images_sha[ovn-kubernetes-microshift]}" \
 }
 
 #
@@ -362,8 +361,8 @@ images=(
     [service-ca-operator]="${TARGET_REGISTRY}/service-ca-operator:${OKD_VERSION}-${TARGET_ARCH}"
     [operator-lifecycle-manager]="${TARGET_REGISTRY}/operator-lifecycle-manager:${OKD_VERSION}-${TARGET_ARCH}"
     [operator-registry]="${TARGET_REGISTRY}/operator-registry:${OKD_VERSION}-${TARGET_ARCH}"
-    # [ovn-kubernetes-base]="${TARGET_REGISTRY}/ovn-kubernetes-base:${OKD_VERSION}-${TARGET_ARCH}"
-    # [ovn-kubernetes-microshift]="${TARGET_REGISTRY}/ovn-kubernetes-microshift:${OKD_VERSION}-${TARGET_ARCH}"
+    [ovn-kubernetes-base]="${TARGET_REGISTRY}/ovn-kubernetes-base:${OKD_VERSION}-${TARGET_ARCH}"
+    [ovn-kubernetes-microshift]="${TARGET_REGISTRY}/ovn-kubernetes-microshift:${OKD_VERSION}-${TARGET_ARCH}"
 )
 
 # Check the prerequisites

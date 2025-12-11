@@ -13,6 +13,9 @@ LVM_DISK="${LVM_DISK:-/var/lib/microshift-okd/lvmdisk.image}"
 LVM_VOLSIZE="${LVM_VOLSIZE:-1G}"
 VG_NAME="${VG_NAME:-myvg1}"
 ISOLATED_NETWORK="${ISOLATED_NETWORK:-0}"
+WORKER_ONLY="${WORKER_ONLY:-0}"
+CONTAINER_CACHE_DIR="${CONTAINER_CACHE_DIR:-/var/lib/containers}"
+CREATE_TOPOLVM_BACKEND="${CREATE_TOPOLVM_BACKEND:-0}"
 
 _is_cluster_created() {
     if sudo podman container exists "${NODE_BASE_NAME}1"; then
@@ -85,12 +88,15 @@ _get_ip_address() {
 #   address when the ISOLATED_NETWORK environment variable is set to 0.
 # - The /dev directory is shared with the container to enable TopoLVM CSI driver,
 #   masking the devices that may conflict with the host
-# - The containers storage is mounted on a tmpfs to avoid usage of fuse-overlayfs,
-#   which is less efficient than the default driver
+# - The containers storage is mounted on a shared host volume for image caching
+#   to speed up cluster creation by sharing pulled images across all nodes
 _add_node() {
     local -r name="${1}"
     local -r network_name="${2}"
     local -r ip_address="${3}"
+
+    # Create shared cache directory
+    sudo mkdir -p "${CONTAINER_CACHE_DIR}"
 
     local vol_opts="--tty --volume /dev:/dev"
     for device in input snd dri; do
@@ -107,7 +113,7 @@ _add_node() {
         --ulimit nofile=524288:524288 \
         ${vol_opts} \
         ${network_opts} \
-        --tmpfs /var/lib/containers \
+        --volume "${CONTAINER_CACHE_DIR}:/var/lib/containers" \
         --name "${name}" \
         --hostname "${name}" \
         "${USHIFT_IMAGE}"
@@ -127,9 +133,14 @@ _join_node() {
     sudo podman cp "${tmp_kubeconfig}" "${name}:${dest_kubeconfig}"
     sudo rm -f "${tmp_kubeconfig}"
 
+    local worker_flag=""
+    if [ "${WORKER_ONLY}" = "1" ]; then
+        worker_flag="--worker-only"
+    fi
+
     sudo podman exec -i "${name}" bash -c "\
         systemctl stop microshift kubepods.slice crio && \
-        microshift add-node --kubeconfig=${dest_kubeconfig} --learner=false > add-node.log 2>&1"
+        microshift add-node --kubeconfig=${dest_kubeconfig} --learner=false ${worker_flag} > add-node.log 2>&1"
 
     return $?
 }
@@ -155,7 +166,9 @@ cluster_create() {
     fi
 
     sudo modprobe openvswitch || true
-    create_topolvm_backend
+    if [ "${CREATE_TOPOLVM_BACKEND}" = "1" ]; then
+        create_topolvm_backend
+    fi
     _create_podman_network "${USHIFT_MULTINODE_CLUSTER}"
 
     local -r subnet=$(_get_subnet "${USHIFT_MULTINODE_CLUSTER}")
@@ -199,7 +212,26 @@ cluster_add_node() {
     local -r node_name="${NODE_BASE_NAME}${node_id}"
     local -r ip_address=$(_get_ip_address "$subnet" "$node_id")
 
-    cluster_healthy
+    # Wait for existing nodes to be ready before adding new node
+    # Note: Adding control planes may cause existing CPs to restart (DaemonSet updates)
+    # so we retry with a timeout to allow temporary service disruptions
+    echo "Waiting for existing nodes to be ready before adding new node..."
+    local retries=0
+    local max_retries=12  # 12 * 5s = 60s max wait
+    while [ $retries -lt $max_retries ]; do
+        if cluster_ready 2>/dev/null; then
+            break
+        fi
+        echo "Nodes not ready yet, retrying in 5s (attempt $((retries + 1))/${max_retries})..."
+        sleep 5
+        retries=$((retries + 1))
+    done
+
+    # Final check - if still not ready, fail
+    if ! cluster_ready; then
+        echo "ERROR: Existing nodes failed to become ready after ${max_retries} attempts" >&2
+        exit 1
+    fi
 
     echo "Creating node: ${node_name}"
     if ! _add_node "${node_name}" "${USHIFT_MULTINODE_CLUSTER}" "${ip_address}"; then
@@ -218,7 +250,12 @@ cluster_add_node() {
         exit 1
     fi
 
-    echo "Node added successfully. To access the new node container, run:"
+    local node_type="node"
+    if [ "${WORKER_ONLY}" = "1" ]; then
+        node_type="worker-only node"
+    fi
+
+    echo "Node added successfully as ${node_type}. To access the new node container, run:"
     echo "  sudo podman exec -it ${node_name} /bin/bash -l"
     return 0
 }
@@ -276,6 +313,7 @@ cluster_destroy() {
     delete_topolvm_backend
 
     echo "Cluster destroyed successfully"
+    echo "NOTE: Container images shared with host at ${CONTAINER_CACHE_DIR}"
 }
 
 
@@ -285,15 +323,29 @@ cluster_ready() {
         echo "No running nodes found"
         exit 1
     fi
+
+    # First wait for MicroShift services to be running
     for container in ${containers}; do
-        echo "Checking readiness of node: ${container}"
+        echo "Checking if MicroShift service is running on: ${container}"
         state=$(sudo podman exec -i "${container}" systemctl show --property=SubState --value microshift.service 2>/dev/null || echo "unknown")
         if [ "${state}" != "running" ]; then
-            echo "Node ${container} is not ready."
+            echo "Node ${container} MicroShift service is not running (state: ${state})."
             exit 1
         fi
     done
-    echo "All nodes running."
+
+    # Then verify nodes are Ready in Kubernetes (not just running)
+    local -r first_node="${NODE_BASE_NAME}1"
+    for container in ${containers}; do
+        echo "Checking Kubernetes Ready status of node: ${container}"
+        # Get node status from kubectl - Ready nodes have "Ready" in status conditions
+        ready_status=$(sudo podman exec -i "${first_node}" kubectl get node "${container}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+        if [ "${ready_status}" != "True" ]; then
+            echo "Node ${container} is not Ready in Kubernetes (status: ${ready_status})."
+            exit 1
+        fi
+    done
+    echo "All nodes running and Ready."
 }
 
 cluster_healthy() {
