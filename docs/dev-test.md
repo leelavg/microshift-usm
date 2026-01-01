@@ -38,13 +38,13 @@ make dev-patch USHIFT_LOCAL_PATH=<microshift-source-path>
 
 What it does:
 1. Copies fresh `microshift` binary from source repository
-2. Rebuilds microshift-okd-dev image with new binary
+2. Rebuilds microshift-okd-dev image with new binary (--no-cache enforced)
 3. Preserves container caches (no network pulls)
 4. Does NOT restart cluster (manual restart required)
 
 **Restart cluster after patch**:
 ```bash
-make clean && make run USHIFT_IMAGE=microshift-okd-dev
+make clean && make run ENABLE_HA=1 USHIFT_IMAGE=microshift-okd-dev
 ```
 
 ### Full Build Cycle
@@ -83,11 +83,12 @@ Node IPs follow pattern: `<node-subnet>.(node_id+10)`
 ### Bootstrap (First Control Plane)
 
 ```bash
-make run USHIFT_IMAGE=microshift-okd-dev
+make run ENABLE_HA=1 USHIFT_IMAGE=microshift-okd-dev
 make run-ready
 ```
 
-Creates `microshift-okd-1` (first control plane)
+Creates `microshift-okd-1` (first control plane) with HA enabled.
+**IMPORTANT**: Use `ENABLE_HA=1` to enable multinode control plane support.
 
 ### Add First Worker
 
@@ -305,6 +306,11 @@ WORKER_ONLY             # 0 for control plane, 1 for worker (default: 0)
 **Cluster won't start after dev-patch**:
 Check binary variant: `strings _output/bin/microshift | grep BuildVariant`
 Should show: `BuildVariant=community`
+
+**Cannot add control plane**:
+Error: "Cannot add control plane - bootstrap node not created with ENABLE_HA=1"
+Solution: Recreate cluster with `make clean && make run ENABLE_HA=1`
+Workers can join any cluster, but control planes require HA mode.
 
 **Firewall blocking connections**:
 Verify ports opened: `firewall-cmd --list-all` (inside container)

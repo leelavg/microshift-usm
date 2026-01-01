@@ -95,6 +95,7 @@ _add_node() {
     local -r name="${1}"
     local -r network_name="${2}"
     local -r ip_address="${3}"
+    local -r is_bootstrap="${4:-0}"  # New parameter: 1 for bootstrap, 0 for joining nodes
 
     # Create shared cache directory
     sudo mkdir -p "${CONTAINER_CACHE_DIR}"
@@ -115,19 +116,27 @@ _add_node() {
         ${vol_opts} \
         ${network_opts} \
         --volume "${CONTAINER_CACHE_DIR}:/var/lib/containers" \
-        --env ENABLE_HA="${ENABLE_HA}" \
+        --env ENABLE_HA=${ENABLE_HA} \
         --name "${name}" \
         --hostname "${name}" \
         "${USHIFT_IMAGE}"
     
-    # Create .enable-ha marker file if ENABLE_HA=1
-    if [ "${ENABLE_HA}" = "1" ]; then
-        echo "Creating .enable-ha marker file in container ${name}"
-        sudo podman exec "${name}" bash -c 'mkdir -p /var/lib/microshift-data && cat > /var/lib/microshift-data/.enable-ha <<EOF
+    # Write enable_ha marker file for bootstrap node when ENABLE_HA=1
+    # Joining CPs will copy this marker from bootstrap
+    # Must be in /var/lib/microshift/ (config.DataDir) not /var/lib/microshift-data/
+    if [ "${is_bootstrap}" = "1" ] && [ "${ENABLE_HA}" = "1" ]; then
+        echo "Writing .enable-ha marker in bootstrap container ${name}"
+        sudo podman exec "${name}" bash -c 'mkdir -p /var/lib/microshift && cat > /var/lib/microshift/.enable-ha <<EOF
 # MicroShift HA mode marker
-# This file is auto-generated when ENABLE_HA=1
-# The presence of this file enables kube-vip deployment even for single control plane
+# Copied to all control plane nodes in HA clusters
+# Triggers enable_ha=true in .cluster-config
 EOF'
+
+        # Write VIP to .tls-san for API server certificate SANs
+        # All control plane nodes will read this to add VIP to their certs
+        local vip=$(echo "${ip_address}" | awk -F. '{print $1"."$2"."$3".100"}')
+        echo "Writing .tls-san=${vip} in bootstrap container ${name}"
+        sudo podman exec "${name}" bash -c "echo '${vip}' > /var/lib/microshift/.tls-san"
     fi
 
     return $?
@@ -144,6 +153,40 @@ _join_node() {
     local -r dest_kubeconfig="kubeconfig"
     sudo podman cp "${tmp_kubeconfig}" "${name}:${dest_kubeconfig}"
     sudo rm -f "${tmp_kubeconfig}"
+
+    # Copy .cluster-config from bootstrap to preserve enable_ha field
+    # This ensures add-node can read enable_ha when regenerating the config
+    local -r src_cluster_config="/var/lib/microshift/.cluster-config"
+    local -r tmp_cluster_config="/tmp/cluster-config.${primary_name}"
+    if sudo podman exec "${primary_name}" test -f "${src_cluster_config}"; then
+        sudo podman cp "${primary_name}:${src_cluster_config}" "${tmp_cluster_config}"
+        sudo podman exec "${name}" mkdir -p /var/lib/microshift
+        sudo podman cp "${tmp_cluster_config}" "${name}:${src_cluster_config}"
+        sudo rm -f "${tmp_cluster_config}"
+        echo "Copied .cluster-config from bootstrap to ${name} (preserves enable_ha field)"
+    fi
+
+    # Copy .tls-san and .enable-ha from bootstrap to joining CPs (workers don't need them)
+    # All CPs need these markers for VIP in certs and enable_ha in cluster config
+    if [ "${WORKER_ONLY}" != "1" ]; then
+        local -r src_tls_san="/var/lib/microshift/.tls-san"
+        local -r tmp_tls_san="/tmp/tls-san.${primary_name}"
+        if sudo podman exec "${primary_name}" test -f "${src_tls_san}"; then
+            sudo podman cp "${primary_name}:${src_tls_san}" "${tmp_tls_san}"
+            sudo podman cp "${tmp_tls_san}" "${name}:${src_tls_san}"
+            sudo rm -f "${tmp_tls_san}"
+            echo "Copied .tls-san from bootstrap to ${name}"
+        fi
+
+        local -r src_enable_ha="/var/lib/microshift/.enable-ha"
+        local -r tmp_enable_ha="/tmp/enable-ha.${primary_name}"
+        if sudo podman exec "${primary_name}" test -f "${src_enable_ha}"; then
+            sudo podman cp "${primary_name}:${src_enable_ha}" "${tmp_enable_ha}"
+            sudo podman cp "${tmp_enable_ha}" "${name}:${src_enable_ha}"
+            sudo rm -f "${tmp_enable_ha}"
+            echo "Copied .enable-ha from bootstrap to ${name}"
+        fi
+    fi
 
     local worker_flag=""
     if [ "${WORKER_ONLY}" = "1" ]; then
@@ -191,7 +234,7 @@ cluster_create() {
 
     local -r node_name="${NODE_BASE_NAME}1"
     local -r ip_address=$(_get_ip_address "$subnet" "1")
-    if ! _add_node "${node_name}" "${network_name}" "${ip_address}"; then
+    if ! _add_node "${node_name}" "${network_name}" "${ip_address}" "1"; then
         echo "ERROR: failed to create node: $node_name" >&2
         exit 1
     fi
@@ -224,6 +267,15 @@ cluster_add_node() {
     local -r node_name="${NODE_BASE_NAME}${node_id}"
     local -r ip_address=$(_get_ip_address "$subnet" "$node_id")
 
+    # Validate: Cannot add control plane to non-HA cluster
+    if [ "${WORKER_ONLY}" = "0" ]; then
+        if ! sudo podman exec "${NODE_BASE_NAME}1" test -f /var/lib/microshift/.enable-ha 2>/dev/null; then
+            echo "ERROR: Cannot add control plane - bootstrap node not created with ENABLE_HA=1" >&2
+            echo "       To create HA cluster: make run ENABLE_HA=1" >&2
+            exit 1
+        fi
+    fi
+
     # Wait for existing nodes to be ready before adding new node
     # Note: Adding control planes may cause existing CPs to restart (DaemonSet updates)
     # so we retry with a timeout to allow temporary service disruptions
@@ -245,11 +297,19 @@ cluster_add_node() {
         exit 1
     fi
 
+    # CRITICAL: Joining nodes must NOT use ENABLE_HA env var
+    # They read enable_ha field from .cluster-config instead
+    local -r saved_enable_ha="${ENABLE_HA}"
+    export ENABLE_HA=0
+    
     echo "Creating node: ${node_name}"
-    if ! _add_node "${node_name}" "${USHIFT_MULTINODE_CLUSTER}" "${ip_address}"; then
+    if ! _add_node "${node_name}" "${USHIFT_MULTINODE_CLUSTER}" "${ip_address}" "0"; then
+        export ENABLE_HA="${saved_enable_ha}"
         echo "ERROR: failed to create node: ${node_name}" >&2
         exit 1
     fi
+    
+    export ENABLE_HA="${saved_enable_ha}"
     echo "Joining node to the cluster: ${node_name}"
     if ! _join_node "${node_name}"; then
         echo "ERROR: failed to join node to the cluster: ${node_name}" >&2

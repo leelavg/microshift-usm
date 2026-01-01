@@ -55,6 +55,7 @@ all:
 	@echo ""
 	@echo "Sub-targets:"
 	@echo "   rpm-to-deb:	convert the MicroShift RPMs to Debian packages"
+	@echo "   kubeconfig:	extract kubeconfig for external/host access (auto-detects HA mode)"
 	@echo "   run-ready: 	wait until the MicroShift service is ready across the cluster"
 	@echo "   run-healthy:	wait until the MicroShift service is healthy across the cluster"
 	@echo "   run-status:	show the status of the MicroShift cluster"
@@ -195,6 +196,26 @@ run-healthy:
 run-status:
 	@USHIFT_IMAGE=${USHIFT_IMAGE} ISOLATED_NETWORK=${ISOLATED_NETWORK} LVM_DISK=${LVM_DISK} LVM_VOLSIZE=${LVM_VOLSIZE} VG_NAME=${VG_NAME} ./src/cluster_manager.sh status
 
+.PHONY: kubeconfig
+kubeconfig:
+	@if ! sudo podman container exists ${USHIFT_IMAGE}-1; then \
+		echo "ERROR: Bootstrap node (${USHIFT_IMAGE}-1) not found. Run 'make run' first." >&2; \
+		exit 1; \
+	fi
+	@TEMP_KC=$$(mktemp /tmp/kc.XXXXXX.yaml); \
+	sudo podman cp ${USHIFT_IMAGE}-1:/var/lib/microshift/resources/kubeadmin/${USHIFT_IMAGE}-1/kubeconfig $$TEMP_KC; \
+	if [ "${ENABLE_HA}" = "1" ]; then \
+		NODE_IP=$$(sudo podman exec ${USHIFT_IMAGE}-1 hostname -I | awk '{print $$1}'); \
+		VIP=$$(echo $$NODE_IP | awk -F. '{print $$1"."$$2"."$$3".100"}'); \
+		sed -i "s|https://[^:]*:6443|https://$$VIP:6443|g" $$TEMP_KC; \
+		echo "Kubeconfig with VIP ($$VIP): $$TEMP_KC"; \
+	else \
+		NODE_IP=$$(sudo podman exec ${USHIFT_IMAGE}-1 hostname -I | awk '{print $$1}'); \
+		sed -i "s|https://[^:]*:6443|https://$$NODE_IP:6443|g" $$TEMP_KC; \
+		echo "Kubeconfig with node IP ($$NODE_IP): $$TEMP_KC"; \
+	fi; \
+	echo "Test with: kubectl --kubeconfig $$TEMP_KC get nodes"
+
 .PHONY: clean
 clean:
 	@USHIFT_IMAGE=${USHIFT_IMAGE} ISOLATED_NETWORK=${ISOLATED_NETWORK} LVM_DISK=${LVM_DISK} LVM_VOLSIZE=${LVM_VOLSIZE} VG_NAME=${VG_NAME} ./src/cluster_manager.sh delete
@@ -262,6 +283,7 @@ dev-patch:
 	@cp "${USHIFT_LOCAL_PATH}/_output/bin/microshift-etcd" /tmp/microshift-dev-patch/
 	@cp "${USHIFT_LOCAL_PATH}/assets/release/release-x86_64.json" /tmp/microshift-dev-patch/
 	sudo podman build \
+		--no-cache \
 		-f packaging/microshift-dev-patch.Containerfile \
 		-t localhost/microshift-okd-dev:latest \
 		/tmp/microshift-dev-patch
