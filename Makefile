@@ -19,6 +19,7 @@ EMBED_CONTAINER_IMAGES ?= 0
 LVM_VOLSIZE ?= 1G
 ISOLATED_NETWORK ?= 0
 WORKER_ONLY ?= 0
+ENABLE_HA ?= 0
 CONTAINER_CACHE_DIR ?= /var/lib/containers
 
 # Internal variables
@@ -128,7 +129,7 @@ image:
 
 .PHONY: run
 run:
-	@USHIFT_IMAGE=${USHIFT_IMAGE} ./src/cluster_manager.sh create
+	@USHIFT_IMAGE=${USHIFT_IMAGE} ENABLE_HA=${ENABLE_HA} ./src/cluster_manager.sh create
 
 .PHONY: add-node
 add-node:

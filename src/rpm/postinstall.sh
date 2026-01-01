@@ -83,5 +83,16 @@ if [ ! -f /root/.kube/config ] ; then
     ln -sf /var/lib/microshift/resources/kubeadmin/kubeconfig /root/.kube/config
 fi
 
+# Create .enable-ha marker file if ENABLE_HA environment variable is set
+if [ "${ENABLE_HA:-0}" = "1" ]; then
+    mkdir -p /var/lib/microshift-data
+    cat > /var/lib/microshift-data/.enable-ha <<'EOF'
+# MicroShift HA mode marker
+# This file is auto-generated when ENABLE_HA=1
+# The presence of this file enables kube-vip deployment even for single control plane
+EOF
+    echo "Created .enable-ha marker file"
+fi
+
 # Enable the MicroShift service
 systemctl enable microshift

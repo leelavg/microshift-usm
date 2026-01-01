@@ -14,6 +14,7 @@ LVM_VOLSIZE="${LVM_VOLSIZE:-1G}"
 VG_NAME="${VG_NAME:-myvg1}"
 ISOLATED_NETWORK="${ISOLATED_NETWORK:-0}"
 WORKER_ONLY="${WORKER_ONLY:-0}"
+ENABLE_HA="${ENABLE_HA:-0}"
 CONTAINER_CACHE_DIR="${CONTAINER_CACHE_DIR:-/var/lib/containers}"
 CREATE_TOPOLVM_BACKEND="${CREATE_TOPOLVM_BACKEND:-0}"
 
@@ -114,9 +115,20 @@ _add_node() {
         ${vol_opts} \
         ${network_opts} \
         --volume "${CONTAINER_CACHE_DIR}:/var/lib/containers" \
+        --env ENABLE_HA="${ENABLE_HA}" \
         --name "${name}" \
         --hostname "${name}" \
         "${USHIFT_IMAGE}"
+    
+    # Create .enable-ha marker file if ENABLE_HA=1
+    if [ "${ENABLE_HA}" = "1" ]; then
+        echo "Creating .enable-ha marker file in container ${name}"
+        sudo podman exec "${name}" bash -c 'mkdir -p /var/lib/microshift-data && cat > /var/lib/microshift-data/.enable-ha <<EOF
+# MicroShift HA mode marker
+# This file is auto-generated when ENABLE_HA=1
+# The presence of this file enables kube-vip deployment even for single control plane
+EOF'
+    fi
 
     return $?
 }
