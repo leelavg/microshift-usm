@@ -55,6 +55,7 @@ all:
 	@echo ""
 	@echo "Sub-targets:"
 	@echo "   rpm-to-deb:	convert the MicroShift RPMs to Debian packages"
+	@echo "   idms-to-registries:	convert IDMS YAML to registries.conf TOML format"
 	@echo "   kubeconfig:	extract kubeconfig for external/host access (auto-detects HA mode)"
 	@echo "   run-ready: 	wait until the MicroShift service is ready across the cluster"
 	@echo "   run-healthy:	wait until the MicroShift service is healthy across the cluster"
@@ -106,6 +107,20 @@ rpm-to-deb:
 	echo "" && \
 	echo "Conversion completed successfully" && \
 	echo "Debian packages are available in '${RPM_OUTDIR}/deb'"
+
+.PHONY: idms-to-registries
+idms-to-registries:
+	@if [ -z "${IDMS_FILE}" ]; then \
+		echo "ERROR: IDMS_FILE is not set" >&2; \
+		echo "Usage: make idms-to-registries IDMS_FILE=<path-to-idms.yaml> [OUTPUT=<output.conf>]" >&2; \
+		exit 1; \
+	fi
+	@if [ -n "${OUTPUT}" ]; then \
+		./src/idms_to_registries.sh "${IDMS_FILE}" > "${OUTPUT}"; \
+		echo "Conversion completed: ${OUTPUT}"; \
+	else \
+		./src/idms_to_registries.sh "${IDMS_FILE}"; \
+	fi
 
 .PHONY: image
 image:
